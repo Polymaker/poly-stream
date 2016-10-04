@@ -134,6 +134,7 @@ namespace PolyStream
                     {
                         Source.Seek(currentPos, SeekOrigin.Begin);
                         byteRead = ReadSegment(currentNode.Value, buffer, 0, 1024, 0);
+                        //Source.Seek(currentPos, SeekOrigin.Begin);
                         Source.Write(buffer, 0, byteRead);
                     }
                     
@@ -375,8 +376,16 @@ namespace PolyStream
 
             if (segment.CacheIndex < 0)
             {
-                Source.Seek(segment.CacheOffset + segmentOffset, SeekOrigin.Begin);
-                return Source.Read(buffer, bufferOffset, count);
+                long currentPos = Source.Position;
+                try
+                {
+                    Source.Seek(segment.CacheOffset + segmentOffset, SeekOrigin.Begin);
+                    return Source.Read(buffer, bufferOffset, count);
+                }
+                finally
+                {
+                    Source.Position = currentPos;
+                }
             }
             else
             {
