@@ -125,17 +125,18 @@ namespace PolyStream
                 
                 var currentNode = Segments.Last;
                 int byteRead = 0;
-                long currentPos = Length - buffer.Length;
+                long currentPos = Length;
 
                 do
                 {
+                    currentPos -= currentNode.Value.Length;
                     if (currentNode.Value.CacheIndex < 0)
                     {
                         Source.Seek(currentPos, SeekOrigin.Begin);
                         byteRead = ReadSegment(currentNode.Value, buffer, 0, 1024, 0);
                         Source.Write(buffer, 0, byteRead);
                     }
-                    currentPos -= currentNode.Value.Length;
+                    
                 }
                 while ((currentNode = currentNode.Previous) != null);
 
@@ -200,7 +201,7 @@ namespace PolyStream
         private SegmentLocation FindSegment(long position)
         {
 
-            if (position > Length)
+            if (position > Length || Segments.Count == 0)
                 return null;
 
             var currentNode = Segments.First;
@@ -312,6 +313,7 @@ namespace PolyStream
                 Segments.AddBefore(start.Node, left);
                 _Length += left.Length;
             }
+
             if (right != Segment.Invaild)
             {
                 Segments.AddAfter(end.Node, right);
@@ -323,6 +325,11 @@ namespace PolyStream
 
         private void OverwriteSegment(long position, long length, Segment newSegment)
         {
+            if ((Length == 0 && position == 0) || position == Length)
+            {
+                InsertSegment(position, newSegment);
+                return;
+            }
             SegmentLocation start, end;
             if (!GetSegmentsFromTo(position, position + length, out start, out end))
                 throw new Exception();
@@ -381,34 +388,64 @@ namespace PolyStream
 
         #region Modification operations (Write/Overwrite, Insert, Remove & Append
 
+        private bool IsSimpleStream()
+        {
+            return Segments.Count <= 1 || Segments.All(s => s.CacheIndex == -1);
+        }
+
         public override void Write(byte[] buffer, int offset, int count)
         {
+            WriteAt(Position, buffer, offset, count);
+            _Position += count;
+        }
 
-            var newSegment = WriteToCache(buffer, offset, count);
-            OverwriteSegment(Position, newSegment.Length, newSegment);
-            _Position += newSegment.Length;
+        public void WriteAt(long position, byte[] buffer, int offset, int count)
+        {
+            Segment newSegment = default(Segment);
+
+            if (IsSimpleStream())
+            {
+                Source.Seek(position, SeekOrigin.Begin);
+                Source.Write(buffer, offset, count);
+                newSegment = new Segment(count, -1, position);
+            }
+            else
+                newSegment = WriteToCache(buffer, offset, count);
+
+            OverwriteSegment(position, newSegment.Length, newSegment);
         }
 
         public void Insert(byte[] buffer, int offset, int count)
         {
-            if (Segments.Count == 0 || Position == Length)
+            InsertAt(Position, buffer, offset, count);
+            _Position += count;
+        }
+
+        public void InsertAt(long position, byte[] buffer, int offset, int count)
+        {
+            if (position == Length || (position == 0 && Length == 0))
             {
-                Write(buffer, offset, count);
+                WriteAt(position, buffer, offset, count);
                 return;
             }
+
             var newSegment = WriteToCache(buffer, offset, count);
-            InsertSegment(Position, newSegment);
-            _Position += newSegment.Length;
+            InsertSegment(position, newSegment);
         }
 
         public void Remove(int count)
+        {
+            RemoveAt(Position, count);
+        }
+
+        public void RemoveAt(long position, int count)
         {
             if (Segments.Count == 0/* || Length == 0*/)
             {
                 //throw new Exception();
                 return;
             }
-            RemoveSegment(Position, count);
+            RemoveSegment(position, count);
         }
 
         private Segment WriteToCache(byte[] buffer, int offset, int count)
