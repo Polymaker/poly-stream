@@ -11,6 +11,8 @@ namespace PolyStream
     {
         private FileStream cacheStream;
 
+        public const long DefaultMaxBuffer = 1024 * 1024 * 1024;
+
         public override long Length
         {
             get { return cacheStream.Length; }
@@ -18,9 +20,7 @@ namespace PolyStream
 
         public TempFileCache()
         {
-            //File.Create(
             cacheStream = File.Open(Path.GetTempFileName(), FileMode.Open, FileAccess.ReadWrite);
-
         }
 
         public override int Read(long position, byte[] buffer, int bufferOffset, int count)

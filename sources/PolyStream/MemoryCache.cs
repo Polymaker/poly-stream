@@ -11,6 +11,8 @@ namespace PolyStream
     {
         private MemoryStream cacheStream;
 
+        public const long DefaultMaxBuffer = 20 * 1024 * 1024;
+
         public override long Length
         {
             get { return cacheStream.Length; }
