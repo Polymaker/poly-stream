@@ -16,6 +16,8 @@ namespace PolyStream
 
         internal abstract void Append(byte[] buffer, int bufferOffset, int count);
 
+        internal abstract void Write(long position, byte[] buffer, int bufferOffset, int count);
+
         public abstract void Dispose();
     }
 }

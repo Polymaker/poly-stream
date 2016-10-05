@@ -36,6 +36,18 @@ namespace PolyStream
             cacheStream.Flush();
         }
 
+        internal override void Write(long position, byte[] buffer, int bufferOffset, int count)
+        {
+            cacheStream.Seek(position, SeekOrigin.Begin);
+            cacheStream.Write(buffer, bufferOffset, count);
+            cacheStream.Flush();
+        }
+
+        ~TempFileCache()
+        {
+            Dispose();
+        }
+
         public override void Dispose()
         {
             if (cacheStream != null)
@@ -44,6 +56,7 @@ namespace PolyStream
                 File.Delete(cacheStream.Name);
                 cacheStream = null;
             }
+            GC.SuppressFinalize(this);
         }
     }
 }

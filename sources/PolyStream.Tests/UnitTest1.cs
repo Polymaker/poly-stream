@@ -15,15 +15,16 @@ namespace PolyStream.Tests
             {
                 var buffer = new byte[] { 0xAA, 0xBB, 0xCC };
                 testStream.Write(buffer, 0, buffer.Length);
-
+                PrintStream(testStream);
                 buffer = new byte[] { 0xDD, 0xEE, 0xFF };
                 testStream.Write(buffer, 0, buffer.Length);
-
+                PrintStream(testStream);
                 buffer = new byte[] { 0x12, 0x34, 0x56 };
 
-                testStream.Position = 2;
+                testStream.Position = 3;
                 testStream.Insert(buffer, 0, buffer.Length);
-                
+                PrintStream(testStream);
+                testStream.WriteAt(4, new byte[] { 0x42, 0x42, 0x42, 0x42, 0x42 }, 0, 5);
                 //PrintStream(testStream);
                 //testStream.RemoveAt(1, 2);
                 PrintStream(testStream);

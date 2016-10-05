@@ -9,14 +9,12 @@ namespace PolyStream
 {
     public class ModifiableStream : Stream
     {
-
         private readonly CachingMethod _CachingMethod;
         private LinkedList<Segment> Segments;
         private Stream Source;
         private List<StreamCache> CachedData;
         private long _Position;
         private long _Length;
-        private bool isSimpleStream;
 
         #region Properties...
 
@@ -48,7 +46,9 @@ namespace PolyStream
                 Seek(value, SeekOrigin.Begin);
             }
         }
-        
+
+        public bool SourceOwner { get; set; }
+
         public CachingMethod CachingMethod
         {
             get { return _CachingMethod; }
@@ -58,9 +58,15 @@ namespace PolyStream
 
         #region Ctor & initialization
 
-        public ModifiableStream() : this(new MemoryStream(), CachingMethod.InMemory) { }
+        public ModifiableStream() : this(new MemoryStream(), CachingMethod.InMemory)
+        {
+            SourceOwner = true;
+        }
 
-        public ModifiableStream(CachingMethod cachingMethod) : this(new MemoryStream(), cachingMethod) { }
+        public ModifiableStream(CachingMethod cachingMethod) : this(new MemoryStream(), cachingMethod)
+        {
+            SourceOwner = true;
+        }
 
         public ModifiableStream(Stream source) : this(source, CachingMethod.InMemory) { }
 
@@ -109,7 +115,6 @@ namespace PolyStream
         private void InitFirstSegment()
         {
             Segments.Clear();
-            isSimpleStream = true;
             if (Source.Length > 0)
                 Segments.AddFirst(new Segment(Source.Length));
         }
@@ -209,7 +214,6 @@ namespace PolyStream
 
         private SegmentLocation FindSegment(long position)
         {
-
             if (position > Length || Segments.Count == 0)
                 return null;
 
@@ -217,7 +221,7 @@ namespace PolyStream
             long currentPos = 0;
             do
             {
-                if (position >= currentPos && position < currentPos + currentNode.Value.Length)
+                if (position >= currentPos && position < currentPos + currentNode.Value.Length + (currentNode.Value.Length == 0 ? 1 : 0))
                 {
                     return new SegmentLocation(currentNode, currentPos, position - currentPos);
                 }
@@ -257,7 +261,7 @@ namespace PolyStream
             }
             else
             {
-                last = new SegmentLocation(Segments.Last, Length - Segments.Last.Value.Length, Segments.Last.Value.Length - 1);
+                last = new SegmentLocation(Segments.Last, Length - Segments.Last.Value.Length, Segments.Last.Value.Length/* - 1*/);
             }
 
             return first != null && last != null;
@@ -272,15 +276,16 @@ namespace PolyStream
         private void InsertSegment(long position, Segment newSegment)
         {
             var segmentAtPosition = FindSegment(position);
+            LinkedListNode<Segment> newNode = null;
             if (segmentAtPosition == null)
             {
                 //if (position != Length)
                 //    throw new Exception();
-                Segments.AddLast(newSegment);
+                newNode = Segments.AddLast(newSegment);
             }
             else if (segmentAtPosition.LocalPosition == 0)
             {
-                Segments.AddBefore(segmentAtPosition.Node, newSegment);
+                newNode = Segments.AddBefore(segmentAtPosition.Node, newSegment);
             }
             else
             {
@@ -288,13 +293,12 @@ namespace PolyStream
                 var splitPos = position - segmentAtPosition.StreamPosition;
                 SplitSegment(segmentAtPosition.Segment, splitPos, out left, out right);
                 Segments.AddBefore(segmentAtPosition.Node, left);
-                Segments.AddBefore(segmentAtPosition.Node, newSegment);
+                newNode = Segments.AddBefore(segmentAtPosition.Node, newSegment);
                 segmentAtPosition.Node.Value = right;
             }
 
-            TryKeepSimple();
-
-            _Length += newSegment.Length;
+            TryMergeSegment(newNode);
+            _Length += newNode.Value.Length;
         }
 
         private void RemoveSegment(long position, long length)
@@ -304,7 +308,6 @@ namespace PolyStream
                 throw new Exception();
 
             RemoveSegment(start, end);
-            TryKeepSimple();
         }
 
         private void RemoveSegment(SegmentLocation start, SegmentLocation end)
@@ -350,40 +353,27 @@ namespace PolyStream
             InsertSegment(position, newSegment);
         }
 
-        private void TryKeepSimple()
+        private void TryMergeSegment(LinkedListNode<Segment> segmentNode)
         {
-            if (isSimpleStream)
+            TryMergeSegments(segmentNode.Previous, segmentNode);
+            TryMergeSegments(segmentNode, segmentNode.Next);
+        }
+
+        private bool TryMergeSegments(LinkedListNode<Segment> left, LinkedListNode<Segment> right)
+        {
+            if (left == null || right == null)
+                return false;
+
+            if (left.Value.CacheIndex != right.Value.CacheIndex)
+                return false;
+
+            if (right.Value.CacheOffset == left.Value.CacheOffset + left.Value.Length)
             {
-                if (!Segments.All(s => s.CacheIndex == -1))
-                {
-                    isSimpleStream = false;
-                    return;
-                }
-
-                if (Segments.Count <= 1)
-                    return;
-
-                var currentNode = Segments.First;
-                
-                while (true)
-                {
-                    if (currentNode.Next == null)
-                        break;
-                    if (currentNode.Next.Value.CacheOffset != currentNode.Value.CacheOffset + currentNode.Value.Length)
-                    {
-                        isSimpleStream = false;
-                        break;
-                    }
-                    currentNode = currentNode.Next;
-                }
-
-                if (isSimpleStream)
-                {
-                    Segments.Clear();
-                    Segments.AddFirst(new Segment(Source.Length));
-                }
-                
+                left.Value = new Segment(left.Value.Length + right.Value.Length, left.Value.CacheIndex, left.Value.CacheOffset);
+                Segments.Remove(right);
+                return true;
             }
+            return false;
         }
 
         #endregion
@@ -435,8 +425,7 @@ namespace PolyStream
 
         #endregion
 
-        #region Modification operations (Write/Overwrite, Insert, Remove & Append
-
+        #region Modification operations (Write/Overwrite, Insert, Remove & Append)
 
         public override void Write(byte[] buffer, int offset, int count)
         {
@@ -451,15 +440,31 @@ namespace PolyStream
 
             Segment newSegment = default(Segment);
 
-            if (isSimpleStream)
+            if (Segments.Count == 0 || (position == Length && Segments.Last.Value.CacheIndex < 0))
             {
                 Source.Seek(position, SeekOrigin.Begin);
-                Source.Write(buffer, offset, count);
-                newSegment = new Segment(count, -1, position);
+                newSegment = WriteToSource(buffer, offset, count);
+                goto PerformWrite;
             }
-            else
-                newSegment = WriteToCache(buffer, offset, count);
 
+            var foundLocation = FindSegment(position);
+            if (foundLocation != null)
+            {
+                var foundSegment = foundLocation.Segment;
+                var segmentCacheLength = GetCacheLength(foundLocation.Segment.CacheIndex);
+
+                if (foundSegment.CacheOffset + foundSegment.Length == segmentCacheLength || 
+                    foundLocation.LocalPosition + count <= foundSegment.Length)
+                {
+                    newSegment = OverwriteCache(foundSegment, foundSegment.CacheOffset + foundLocation.LocalPosition, buffer, offset, count);
+                    goto PerformWrite;
+                }
+
+            }
+
+            newSegment = WriteToCache(buffer, offset, count);
+
+            PerformWrite:
             OverwriteSegment(position, newSegment.Length, newSegment);
         }
 
@@ -517,6 +522,35 @@ namespace PolyStream
             return new Segment(count, currentCache.Index, segmentStartOffset);
         }
 
+        private Segment WriteToSource(byte[] buffer, int offset, int count)
+        {
+            var segmentStartOffset = Source.Position;
+            Source.Write(buffer, offset, count);
+            return new Segment(count, -1, segmentStartOffset);
+        }
+
+        private Segment OverwriteCache(Segment segment, long position, byte[] buffer, int offset, int count)
+        {
+            if (segment.CacheIndex < 0)
+            {
+                Source.Seek(position, SeekOrigin.Begin);
+                Source.Write(buffer, offset, count);
+                return new Segment(count, -1, position);
+            }
+            else
+            {
+                CachedData[segment.CacheIndex].Write(position, buffer, offset, count);
+                return new Segment(count, segment.CacheIndex, position);
+            }
+        }
+
+        private long GetCacheLength(int index)
+        {
+            if (index < 0)
+                return Source.Length;
+            return CachedData[index].Length;
+        }
+
         private StreamCache CreateCache()
         {
             StreamCache newCache;
@@ -547,10 +581,11 @@ namespace PolyStream
         protected override void Dispose(bool disposing)
         {
             ClearCache();
-
+            
             if (Source != null)
             {
-                Source.Dispose();
+                if (SourceOwner)
+                    Source.Dispose();
                 Source = null;
             }
 
@@ -621,13 +656,29 @@ namespace PolyStream
         private class SegmentLocation
         {
             public LinkedListNode<Segment> Node { get; set; }
+
             public Segment Segment
             {
                 get { return Node != null ? Node.Value : default(Segment); }
             }
+
+            /// <summary>
+            /// The segment starting position inside the stream
+            /// </summary>
             public long StreamPosition { get; set; }
+
+            /// <summary>
+            /// The position relative to the start of the segment.
+            /// </summary>
             public long LocalPosition { get; set; }
 
+            /// <summary>
+            /// The requested position.
+            /// </summary>
+            public long StreamOffset
+            {
+                get { return StreamPosition + LocalPosition; }
+            }
 
             public SegmentLocation(LinkedListNode<Segment> node, long streamPosition, long localPosition)
             {
