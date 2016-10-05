@@ -75,25 +75,16 @@ namespace PolyStream
             SourceOwner = true;
         }
 
+        public ModifiableStream(CachingMethod cachingMethod, long maximumCacheSize)
+            : this(new MemoryStream(), cachingMethod, maximumCacheSize)
+        {
+            SourceOwner = true;
+        }
+
         public ModifiableStream(Stream source) : this(source, CachingMethod.InMemory) { }
 
-        public ModifiableStream(Stream source, CachingMethod cachingMethod)
-        {
-            ValidateStream(source);
-            Source = source;
-            _CachingMethod = cachingMethod;
-            _Length = source.Length;
-            _Position = source.Position;
-
-            if (cachingMethod == CachingMethod.InMemory)
-                _MaximumCacheSize = MemoryCache.DefaultMaxBuffer;
-            else
-                _MaximumCacheSize = TempFileCache.DefaultMaxBuffer;
-
-            Segments = new LinkedList<Segment>();
-            CachedData = new List<StreamCache>();
-            InitFirstSegment();
-        }
+        public ModifiableStream(Stream source, CachingMethod cachingMethod) 
+            : this(source, cachingMethod, cachingMethod == CachingMethod.InMemory ? MemoryCache.DefaultMaxBuffer : TempFileCache.DefaultMaxBuffer) { }
 
         public ModifiableStream(Stream source, CachingMethod cachingMethod, long maximumCacheSize)
         {
@@ -111,14 +102,14 @@ namespace PolyStream
         private static void ValidateStream(Stream stream)
         {
             if (stream == null)
-                throw new ArgumentNullException("Source stream mustnot be null.");
+                throw new ArgumentNullException("Source stream must not be null.");
 
             if (stream is ModifiableStream)
                 throw new NotSupportedException("Don't do that. Just don't.");
 
             if (!(stream.CanRead && stream.CanSeek && stream.CanWrite))
-
                 throw new InvalidDataException("Source stream must be readable, seekable and writable.");
+
             try
             {
                 stream.SetLength(stream.Length + 1);
@@ -169,12 +160,13 @@ namespace PolyStream
         {
             if (value > Length)
             {
-                //append
+                //append zeros  maybe??
             }
             else if (value < Length)
             {
-                //remove
-                //_Position = Math.Min(_Position, Length);
+                var removeAmount = Length - value;
+                RemoveSegment(value, removeAmount);
+                _Position = Math.Min(_Position, Length);
             }
         }
 
@@ -324,16 +316,13 @@ namespace PolyStream
 
         private void OverwriteSegment(long position, long length, Segment newSegment)
         {
-            if (/*(Length == 0 && position == 0) || */position == Length)//we are appending
+            if (position == Length)//we are appending
             {
-                InsertSegment(/*0*/position, newSegment);
+                InsertSegment(position, newSegment);
                 return;
             }
-            SegmentLocation start, end;
-            if (!GetSegmentsFromTo(position, position + length, out start, out end))
-                throw new Exception();
 
-            RemoveSegment(start, end);
+            RemoveSegment(position, length);
             InsertSegment(position, newSegment);
         }
 
@@ -499,7 +488,7 @@ namespace PolyStream
             WriteAt(Length, buffer, offset, count);
         }
 
-        [EditorBrowsable( EditorBrowsableState.Advanced)]
+        [EditorBrowsable(EditorBrowsableState.Advanced)]
         public void AppendAt(long position, byte[] buffer, int offset, int count)//for the sake of continuity I had to add this function too...
         {
             throw new DivideByZeroException("Appending data at a specified position is called 'Insert' you moron.");
@@ -594,6 +583,9 @@ namespace PolyStream
 
         private Segment WriteToCache(byte[] buffer, int offset, int count)
         {
+            if (count > MaximumCacheSize)
+                throw new InternalBufferOverflowException("You are trying to write a chunk larger than the maximum cache size.");
+
             StreamCache currentCache = null;
 
             if (CachedData.Count == 0 || !CanAppendToCache(CachedData.Count - 1, count))
@@ -608,6 +600,8 @@ namespace PolyStream
 
         private Segment WriteToSource(byte[] buffer, int offset, int count)
         {
+            //contrary to WriteToCache, this writes a the current position in the source stream
+            //but at the moment this function is used only when writing appending, if there is no need for this function elsewhere, consider moving Seek call here
             var segmentStartOffset = Source.Position;
             Source.Write(buffer, offset, count);
             return new Segment(count, -1, segmentStartOffset);
@@ -675,9 +669,8 @@ namespace PolyStream
                 if (Length > Source.Length)
                     Source.SetLength(Length);//expand before
 
-                var buffer = new byte[1024];
-
                 //FIRST PASS: start by writing segments from source stream in reverse order
+                //if we want to support segment reordering/swapping this won't prevent segment overwrite/corruption
 
                 var currentNode = Segments.Last;
                 long currentPos = Length;
