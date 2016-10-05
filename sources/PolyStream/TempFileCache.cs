@@ -18,7 +18,9 @@ namespace PolyStream
 
         public TempFileCache()
         {
-            cacheStream = File.OpenWrite(Path.GetTempFileName());
+            //File.Create(
+            cacheStream = File.Open(Path.GetTempFileName(), FileMode.Open, FileAccess.ReadWrite);
+
         }
 
         public override int Read(long position, byte[] buffer, int bufferOffset, int count)
@@ -31,6 +33,7 @@ namespace PolyStream
         {
             cacheStream.Seek(0, SeekOrigin.End);
             cacheStream.Write(buffer, bufferOffset, count);
+            cacheStream.Flush();
         }
 
         public override void Dispose()

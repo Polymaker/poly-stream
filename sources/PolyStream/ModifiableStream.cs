@@ -16,6 +16,7 @@ namespace PolyStream
         private List<StreamCache> CachedData;
         private long _Position;
         private long _Length;
+        private bool isSimpleStream;
 
         #region Properties...
 
@@ -58,6 +59,8 @@ namespace PolyStream
         #region Ctor & initialization
 
         public ModifiableStream() : this(new MemoryStream(), CachingMethod.InMemory) { }
+
+        public ModifiableStream(CachingMethod cachingMethod) : this(new MemoryStream(), cachingMethod) { }
 
         public ModifiableStream(Stream source) : this(source, CachingMethod.InMemory) { }
 
@@ -106,6 +109,7 @@ namespace PolyStream
         private void InitFirstSegment()
         {
             Segments.Clear();
+            isSimpleStream = true;
             if (Source.Length > 0)
                 Segments.AddFirst(new Segment(Source.Length));
         }
@@ -124,19 +128,13 @@ namespace PolyStream
                 //FIRST PASS: start by writing segments from source stream in reverse order
                 
                 var currentNode = Segments.Last;
-                int byteRead = 0;
                 long currentPos = Length;
 
                 do
                 {
                     currentPos -= currentNode.Value.Length;
                     if (currentNode.Value.CacheIndex < 0)
-                    {
-                        Source.Seek(currentPos, SeekOrigin.Begin);
-                        byteRead = ReadSegment(currentNode.Value, buffer, 0, 1024, 0);
-                        //Source.Seek(currentPos, SeekOrigin.Begin);
-                        Source.Write(buffer, 0, byteRead);
-                    }
+                        WriteSegment(currentPos, currentNode.Value, 0);
                     
                 }
                 while ((currentNode = currentNode.Previous) != null);
@@ -148,11 +146,7 @@ namespace PolyStream
                 do
                 {
                     if (currentNode.Value.CacheIndex >= 0)
-                    {
-                        Source.Seek(currentPos, SeekOrigin.Begin);
-                        byteRead = ReadSegment(currentNode.Value, buffer, 0, 1024, 0);
-                        Source.Write(buffer, 0, byteRead);
-                    }
+                        WriteSegment(currentPos, currentNode.Value, 0);
                     currentPos += currentNode.Value.Length;
                 }
                 while ((currentNode = currentNode.Next) != null);
@@ -164,6 +158,20 @@ namespace PolyStream
             Source.Flush();
             _Length = Source.Length;
             InitFirstSegment();
+        }
+
+        private void WriteSegment(long sourcePosition, Segment segment, long segmentOffset)
+        {
+            var buffer = new byte[1024];
+            int byteRead = 0;
+            Source.Seek(sourcePosition, SeekOrigin.Begin);
+            do
+            {
+                byteRead = ReadSegment(segment, buffer, 0, 1024, segmentOffset);
+                segmentOffset += byteRead;
+                Source.Write(buffer, 0, byteRead);
+            }
+            while (byteRead >= buffer.Length);
         }
 
         public override long Seek(long offset, SeekOrigin origin)
@@ -284,6 +292,8 @@ namespace PolyStream
                 segmentAtPosition.Node.Value = right;
             }
 
+            TryKeepSimple();
+
             _Length += newSegment.Length;
         }
 
@@ -294,16 +304,17 @@ namespace PolyStream
                 throw new Exception();
 
             RemoveSegment(start, end);
+            TryKeepSimple();
         }
 
         private void RemoveSegment(SegmentLocation start, SegmentLocation end)
         {
             Segment left = Segment.Invaild, right = Segment.Invaild, dummy;
 
-            if (start.LocalPosition > 0 && start.LocalPosition < start.Segment.Length - 1)
+            if (start.LocalPosition > 0/* && start.LocalPosition < start.Segment.Length - 1*/)
                 SplitSegment(start.Segment, start.LocalPosition, out left, out dummy);
 
-            if (end.LocalPosition > 0 && end.LocalPosition < end.Segment.Length - 1)
+            if (end.LocalPosition > 0 && end.LocalPosition < end.Segment.Length)
                 SplitSegment(end.Segment, end.LocalPosition, out dummy, out right);
 
             var nodesToRemove = Segments.GetNodesInBetween(start.Node, end.Node);
@@ -334,16 +345,45 @@ namespace PolyStream
             SegmentLocation start, end;
             if (!GetSegmentsFromTo(position, position + length, out start, out end))
                 throw new Exception();
-            var prevNode = start.Node.Previous;
 
             RemoveSegment(start, end);
+            InsertSegment(position, newSegment);
+        }
 
-            if (prevNode != null)
-                Segments.AddAfter(prevNode, newSegment);
-            else
-                Segments.AddFirst(newSegment);
+        private void TryKeepSimple()
+        {
+            if (isSimpleStream)
+            {
+                if (!Segments.All(s => s.CacheIndex == -1))
+                {
+                    isSimpleStream = false;
+                    return;
+                }
 
-            _Length += newSegment.Length;
+                if (Segments.Count <= 1)
+                    return;
+
+                var currentNode = Segments.First;
+                
+                while (true)
+                {
+                    if (currentNode.Next == null)
+                        break;
+                    if (currentNode.Next.Value.CacheOffset != currentNode.Value.CacheOffset + currentNode.Value.Length)
+                    {
+                        isSimpleStream = false;
+                        break;
+                    }
+                    currentNode = currentNode.Next;
+                }
+
+                if (isSimpleStream)
+                {
+                    Segments.Clear();
+                    Segments.AddFirst(new Segment(Source.Length));
+                }
+                
+            }
         }
 
         #endregion
@@ -397,10 +437,6 @@ namespace PolyStream
 
         #region Modification operations (Write/Overwrite, Insert, Remove & Append
 
-        private bool IsSimpleStream()
-        {
-            return Segments.Count <= 1 || Segments.All(s => s.CacheIndex == -1);
-        }
 
         public override void Write(byte[] buffer, int offset, int count)
         {
@@ -410,9 +446,12 @@ namespace PolyStream
 
         public void WriteAt(long position, byte[] buffer, int offset, int count)
         {
+            if (position > Length)
+                throw new IndexOutOfRangeException("position");
+
             Segment newSegment = default(Segment);
 
-            if (IsSimpleStream())
+            if (isSimpleStream)
             {
                 Source.Seek(position, SeekOrigin.Begin);
                 Source.Write(buffer, offset, count);
@@ -432,6 +471,9 @@ namespace PolyStream
 
         public void InsertAt(long position, byte[] buffer, int offset, int count)
         {
+            if (position > Length)
+                throw new IndexOutOfRangeException("position");
+
             if (position == Length || (position == 0 && Length == 0))
             {
                 WriteAt(position, buffer, offset, count);
@@ -449,6 +491,9 @@ namespace PolyStream
 
         public void RemoveAt(long position, int count)
         {
+            if (position > Length)
+                throw new IndexOutOfRangeException("position");
+
             if (Segments.Count == 0/* || Length == 0*/)
             {
                 //throw new Exception();
