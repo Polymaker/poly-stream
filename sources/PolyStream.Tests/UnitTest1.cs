@@ -39,7 +39,7 @@ namespace PolyStream.Tests
                 testStream.Append(buffer, 0, buffer.Length);
                 PrintStream(testStream);
 
-                testStream.WriteAt(5, buffer, 0, buffer.Length);
+                testStream.WriteAt(4, buffer, 0, 2);
                 PrintStream(testStream);
 
                 //testStream.RemoveAt(0, 2, false);
